@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D AR Ice Crystal Birthday Card</title>
+    <style>
+        :root {
+            --neon-cyan: #00ffff;
+            --silver: linear-gradient(135deg, #ffffff 0%, #a0a0a0 50%, #ffffff 100%);
+            --glass-bg: rgba(0, 10, 30, 0.9);
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Optima', 'Segoe UI', system-ui, sans-serif;
+            color: white;
+        }
+
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle at center, #001133 0%, #000000 100%);
+        }
+
+        #overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            background: rgba(0, 0, 0, 0.95);
+            z-index: 100;
+            transition: opacity 0.8s ease-in-out;
+        }
+
+        .glass-panel {
+            background: var(--glass-bg);
+            backdrop-filter: blur(30px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 30px;
+            padding: 60px;
+            text-align: center;
+            box-shadow: 0 0 50px rgba(0, 255, 255, 0.05);
+        }
+
+        h1 {
+            font-size: 3.5rem;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+            letter-spacing: 5px;
+            background: var(--silver);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-weight: 300;
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.3));
+        }
+
+        .sub-text {
+            font-size: 1.2rem;
+            color: #888;
+            letter-spacing: 8px;
+            margin-bottom: 40px;
+            font-weight: 300;
+        }
+
+        button {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 15px 45px;
+            font-size: 1.8rem;
+            cursor: pointer;
+            border-radius: 50px;
+            transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        button:hover {
+            background: white;
+            color: black;
+            transform: scale(1.1);
+            box-shadow: 0 0 30px rgba(255, 255, 255, 0.5);
+        }
+
+        #controls {
+            position: absolute;
+            bottom: 20px; right: 20px;
+            width: 240px;
+            border-radius: 15px;
+            padding: 15px;
+            background: rgba(0, 10, 30, 0.8);
+            backdrop-filter: blur(15px);
+            border: 1px solid rgba(0, 255, 255, 0.3);
+            z-index: 50;
+        }
+
+        #video-container {
+            width: 100%; height: 100px;
+            background: #000; margin-bottom: 12px;
+            border-radius: 10px; overflow: hidden; position: relative;
+        }
+
+        #webcam, #guide-canvas {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            object-fit: cover; transform: scaleX(-1);
+        }
+
+        #gesture-tips {
+            font-size: 0.75rem;
+            color: #00ffff;
+            line-height: 1.8;
+        }
+
+        .hidden { display: none !important; }
+        #loading-msg { font-size: 0.9rem; color: #555; margin-top: 10px; }
+    </style>
+</head>
+<body>
+
+    <div id="overlay">
+        <div class="glass-panel">
+            <h1>Happy Birthday</h1>
+            <div class="sub-text">2026.03.02</div>
+            <div id="loading-msg">正在喚醒冰晶夢境...</div>
+            <button id="start-btn" class="hidden">( ̀⌄ ́)</button>
+        </div>
+    </div>
+
+    <div id="controls">
+        <div id="video-container">
+            <video id="webcam" autoplay playsinline></video>
+            <canvas id="guide-canvas"></canvas>
+        </div>
+        <div id="gesture-tips">
+            🤏 <b>捏合</b> · 放煙花！🎇<br>
+            🖐️ <b>張開</b> · 哇！好多星星！✨<br>
+            ✊ <b>握拳</b> · 看蛋糕！生日快樂小狗狗🐾<br>
+            ↔️ <b>移動手</b> · 蛋糕在轉了！(玛莎语
+        </div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+                "@mediapipe/tasks-vision": "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+        import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+        import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+        import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+        import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
+        import TWEEN from 'https://cdn.jsdelivr.net/npm/@tweenjs/tween.js@23.1.1/dist/tween.esm.js';
+
+        let scene, camera, renderer, composer;
+        let crystalParticles = [];
+        let fireworks = []; 
+        let snowParticles, textMesh, cakeCore;
+        let handLandmarker, webcamElement = document.getElementById('webcam');
+        let guideCanvas = document.getElementById('guide-canvas'), ctx = guideCanvas.getContext('2d');
+        let lastVideoTime = -1;
+        let lastGestureTime = 0;
+
+        const APP_STATE = { 
+            MODE: 'SCATTER', 
+            TARGET_ROTATION: { x: 0, y: 0 },
+            AUTO_ROTATION: 0 
+        };
+
+        async function initAI() {
+            try {
+                const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm");
+                handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO", numHands: 1
+                });
+                document.getElementById('loading-msg').classList.add('hidden');
+                document.getElementById('start-btn').classList.remove('hidden');
+            } catch (e) { console.error(e); }
+        }
+
+        function initThree() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = 24;
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+            renderer.toneMapping = THREE.ACESFilmicToneMapping;
+            document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+            // 修正點：RenderPass 需要傳入 scene 和 camera
+            const renderPass = new RenderPass(scene, camera);
+            const bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 1.0, 0.4, 0.85);
+            bloomPass.threshold = 0.2;
+            bloomPass.strength = 0.8;  
+            bloomPass.radius = 0.5;
+
+            composer = new EffectComposer(renderer);
+            composer.addPass(renderPass);
+            composer.addPass(bloomPass);
+            composer.addPass(new OutputPass());
+
+            scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+            const pLight = new THREE.PointLight(0xffffff, 100, 250);
+            pLight.position.set(20, 20, 20);
+            scene.add(pLight);
+
+            createCrystalCake();
+            createSnow();
+            createFloatingText();
+
+            window.addEventListener('resize', onResize);
+        }
+
+        function createCrystalCake() {
+            const coreGeo = new THREE.CylinderGeometry(0.5, 4.5, 11, 32, 1, true);
+            const coreMat = new THREE.MeshPhysicalMaterial({ 
+                color: 0xcccccc, metalness: 1.0, roughness: 0.15, transparent: true, opacity: 0, side: THREE.DoubleSide
+            });
+            cakeCore = new THREE.Mesh(coreGeo, coreMat);
+            cakeCore.position.y = -1;
+            scene.add(cakeCore);
+
+            const count = 5000; 
+            const geo = new THREE.OctahedronGeometry(0.12);
+            const colors = [0x00ffff, 0x44aaff, 0x0066ff, 0xaaaaff, 0x88ddff];
+
+            for (let i = 0; i < count; i++) {
+                let pColor = colors[i % colors.length];
+                let isCandlePart = i > 4500; 
+                let isFlame = i > 4850;
+                if(isCandlePart) pColor = isFlame ? 0xffcc00 : 0xe8e8e8; 
+
+                const crystalMat = new THREE.MeshPhysicalMaterial({
+                    color: pColor, metalness: 0.9, roughness: 0.1, transmission: 0.4, transparent: true, opacity: 0.9,
+                    emissive: pColor, emissiveIntensity: isFlame ? 1.5 : 0.2
+                });
+
+                const mesh = new THREE.Mesh(geo, crystalMat);
+                mesh.position.set((Math.random()-0.5)*80, (Math.random()-0.5)*60, (Math.random()-0.5)*40);
+                
+                let targetPos = new THREE.Vector3();
+                if (!isCandlePart) {
+                    let layer = i < 2500 ? 0 : (i < 3800 ? 1 : 2);
+                    let radii = [5.5, 3.8, 2.2], layerBaseY = [-5, -0.5, 3.5];
+                    let r = Math.sqrt(Math.random()) * radii[layer], angle = i * 0.137;
+                    targetPos.set(Math.cos(angle) * r, layerBaseY[layer] + (Math.random() * 3.5), Math.sin(angle) * r);
+                } else if (!isFlame) {
+                    let angle = Math.random() * Math.PI * 2, r = Math.random() * 0.25;
+                    targetPos.set(Math.cos(angle)*r, 6.5 + Math.random()*3.5, Math.sin(angle)*r);
+                } else {
+                    let angle = Math.random() * Math.PI * 2, r = Math.random() * Math.random() * 0.45, h = Math.random() * 1.2;
+                    targetPos.set(Math.cos(angle)*r * (1.2-h), 10 + h, Math.sin(angle)*r * (1.2-h));
+                }
+                mesh.userData.targetPos = targetPos;
+                mesh.userData.scatterPos = mesh.position.clone();
+                scene.add(mesh);
+                crystalParticles.push(mesh);
+            }
+        }
+
+        function createFirework(x, y, z) {
+            const count = 40;
+            const geo = new THREE.SphereGeometry(0.1, 8, 8);
+            const colors = [0xff0044, 0x00ff88, 0x00ffff, 0xffcc00, 0xff00ff, 0xffffff];
+            const burstColor = colors[Math.floor(Math.random() * colors.length)];
+
+            for (let i = 0; i < count; i++) {
+                const mat = new THREE.MeshBasicMaterial({ color: burstColor, transparent: true, opacity: 1 });
+                const p = new THREE.Mesh(geo, mat);
+                p.position.set(x, y, z);
+                
+                const angle = Math.random() * Math.PI * 2;
+                const phi = Math.random() * Math.PI;
+                const speed = 0.15 + Math.random() * 0.25;
+                
+                p.userData.velocity = new THREE.Vector3(
+                    Math.cos(angle) * Math.sin(phi) * speed,
+                    Math.sin(angle) * Math.sin(phi) * speed,
+                    Math.cos(phi) * speed
+                );
+                p.userData.life = 1.0;
+                scene.add(p);
+                fireworks.push(p);
+            }
+        }
+
+        function createFloatingText() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 1024; canvas.height = 256;
+            const ctxT = canvas.getContext('2d');
+            ctxT.font = 'Bold 100px Arial';
+            ctxT.textAlign = 'center';
+            ctxT.fillStyle = '#ffffff'; 
+            ctxT.fillText('Happy Birthday!', 512, 150);
+            const texture = new THREE.CanvasTexture(canvas);
+            const mat = new THREE.MeshBasicMaterial({ map: texture, transparent: true, side: THREE.DoubleSide });
+            textMesh = new THREE.Mesh(new THREE.PlaneGeometry(11, 2.75), mat);
+            textMesh.position.y = -9.5; 
+            textMesh.visible = false;
+            scene.add(textMesh);
+        }
+
+        function createSnow() {
+            const geo = new THREE.BufferGeometry();
+            const pos = new Float32Array(1500 * 3);
+            for(let i=0; i<4500; i++) pos[i] = (Math.random()-0.5)*80;
+            geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+            const mat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.05, transparent: true, opacity: 0.4 });
+            snowParticles = new THREE.Points(geo, mat);
+            scene.add(snowParticles);
+        }
+
+        function update() {
+            TWEEN.update();
+            const now = performance.now();
+
+            if (handLandmarker && webcamElement.readyState >= 2) {
+                if (webcamElement.currentTime !== lastVideoTime) {
+                    lastVideoTime = webcamElement.currentTime;
+                    const results = handLandmarker.detectForVideo(webcamElement, now);
+                    ctx.clearRect(0, 0, guideCanvas.width, guideCanvas.height);
+                    if (results.landmarks && results.landmarks.length > 0) {
+                        const lm = results.landmarks[0];
+                        APP_STATE.TARGET_ROTATION.y = (lm[0].x - 0.5) * -0.8;
+                        APP_STATE.TARGET_ROTATION.x = (lm[0].y - 0.5) * 0.4;
+                        APP_STATE.AUTO_ROTATION += (lm[0].x - 0.5) * -0.1;
+
+                        const gesture = detectGesture(lm);
+                        handleGesture(gesture, lm[8], now); 
+                        
+                        ctx.fillStyle = "#00ffff";
+                        lm.forEach(p => {
+                            ctx.beginPath(); ctx.arc(p.x * guideCanvas.width, p.y * guideCanvas.height, 2, 0, 7); ctx.fill();
+                        });
+                    }
+                }
+            }
+
+            for (let i = fireworks.length - 1; i >= 0; i--) {
+                const p = fireworks[i];
+                p.position.add(p.userData.velocity);
+                p.userData.velocity.y -= 0.005; 
+                p.userData.life -= 0.015;
+                p.material.opacity = p.userData.life;
+                p.scale.setScalar(p.userData.life);
+                
+                if (p.userData.life <= 0) {
+                    scene.remove(p);
+                    fireworks.splice(i, 1);
+                }
+            }
+
+            snowParticles.position.y -= 0.015;
+            if (snowParticles.position.y < -35) snowParticles.position.y = 35;
+            
+            scene.rotation.y += (APP_STATE.TARGET_ROTATION.y - scene.rotation.y) * 0.05 + APP_STATE.AUTO_ROTATION;
+            scene.rotation.x += (APP_STATE.TARGET_ROTATION.x - scene.rotation.x) * 0.05;
+            APP_STATE.AUTO_ROTATION *= 0.94;
+
+            composer.render();
+            requestAnimationFrame(update);
+        }
+
+        function detectGesture(lm) {
+            const dist = (p1, p2) => Math.sqrt((p1.x-p2.x)**2 + (p1.y-p2.y)**2);
+            const isExt = (t, b) => t.y < b.y;
+            const isPinching = dist(lm[4], lm[8]) < 0.08;
+            const fUp = [isExt(lm[12], lm[10]), isExt(lm[16], lm[14]), isExt(lm[20], lm[18])].filter(v => v).length;
+            
+            if (isPinching) return 'PINCH';
+            if (fUp === 0) return 'FIST';
+            if (fUp >= 2) return 'OPEN';
+            return 'NONE';
+        }
+
+        function handleGesture(g, fingerPos, now) {
+            if (g === 'PINCH' && now - lastGestureTime > 300) {
+                const x = (0.5 - fingerPos.x) * 40; 
+                const y = (0.5 - fingerPos.y) * 25;
+                const z = 10;
+                createFirework(x, y, z);
+                lastGestureTime = now;
+            }
+
+            if (now - lastGestureTime < 800) return;
+
+            if (g === 'FIST' && APP_STATE.MODE !== 'CAKE') {
+                APP_STATE.MODE = 'CAKE';
+                morph('targetPos');
+                textMesh.visible = true;
+                new TWEEN.Tween(cakeCore.material).to({ opacity: 0.15 }, 1500).start();
+                lastGestureTime = now;
+            }
+
+            if (g === 'OPEN' && APP_STATE.MODE === 'CAKE') {
+                APP_STATE.MODE = 'SCATTER';
+                morph('scatterPos');
+                textMesh.visible = false;
+                new TWEEN.Tween(cakeCore.material).to({ opacity: 0 }, 1000).start();
+                lastGestureTime = now;
+            }
+        }
+
+        function morph(key) {
+            crystalParticles.forEach(p => {
+                new TWEEN.Tween(p.position)
+                    .to({ x: p.userData[key].x, y: p.userData[key].y, z: p.userData[key].z }, 1200 + Math.random() * 800)
+                    .easing(TWEEN.Easing.Quartic.Out).start();
+            });
+        }
+
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight); composer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        document.getElementById('start-btn').onclick = async () => {
+            try {
+                const s = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 } });
+                webcamElement.srcObject = s;
+                webcamElement.onloadedmetadata = () => {
+                    guideCanvas.width = webcamElement.videoWidth; guideCanvas.height = webcamElement.videoHeight;
+                    document.getElementById('overlay').style.opacity = '0';
+                    setTimeout(() => {
+                        document.getElementById('overlay').classList.add('hidden');
+                        initThree(); 
+                        update();
+                    }, 1000);
+                };
+            } catch (err) {
+                console.error("Camera access denied:", err);
+                document.getElementById('loading-msg').innerText = "請允許使用攝像頭以啟動 AR 體驗";
+                document.getElementById('loading-msg').classList.remove('hidden');
+            }
+        };
+
+        initAI();
+    </script>
+</body>
+</html>
